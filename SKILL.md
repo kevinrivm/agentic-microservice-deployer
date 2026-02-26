@@ -381,22 +381,41 @@ Si el healthcheck responde 200, el microservicio está integrado correctamente c
 **`create_application` da 422 / validation error**
 → `git_repository` debe ser exactamente `owner/repo` (sin `git@`, sin `.git`, sin `https://`).
 
-**`custom_network_aliases: None` — n8n no alcanza el servicio**
-→ `configure_application` no se ejecutó. Coolify no asigna alias por defecto.
-→ Ejecutar `manager.configure_application(APP_UUID, ALIAS)` y redeploy.
+**`custom_network_aliases` no se aplica / n8n no alcanza el servicio**
+→ La API de Coolify rechaza si mandas varios campos juntos en un solo PATCH.
+→ La solución es enviar **un PATCH separado por campo**:
+```python
+base = f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}"
+# Cada campo en su propio request
+requests.patch(base, headers=headers, json={"custom_network_aliases": ALIAS})
+requests.patch(base, headers=headers, json={"domains": ""})
+requests.patch(base, headers=headers, json={"dockerfile_location": "/Dockerfile"})
+```
 
-**FQDN público no se puede eliminar via API (`"This field is not allowed"`)**
-→ Limitación de la versión de Coolify. Eliminar manualmente:
-  panel → app → Settings → FQDN → borrar el valor → Save → Redeploy.
-→ El servicio sigue siendo accesible internamente, pero esto es importante por seguridad.
+**FQDN público no desaparece / `"This field is not allowed"` al usar `fqdn`**
+→ El campo correcto para eliminar la URL pública es `domains` (no `fqdn`).
+→ Usar: `requests.patch(base, headers=headers, json={"domains": ""})`
+→ Después redeploy para que Traefik actualice la configuración.
 
 **`SERVICE_API_KEY` hardcodeada (ej: `algo-secret-key-2024`)**
-→ Reemplazar con `secrets.token_hex(32)` via PATCH de env en Coolify API.
-→ Actualizar el valor en n8n. Nunca dejar keys predecibles en producción.
+→ Las variables duplicadas no se pueden actualizar con PATCH individual (da 404).
+→ Solución: DELETE del env antiguo + POST del nuevo:
+```python
+# Eliminar duplicados
+envs = requests.get(f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}/envs", headers=headers).json()
+for e in [x for x in envs if x["key"] == "SERVICE_API_KEY"]:
+    requests.delete(f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}/envs/{e['uuid']}", headers=headers)
+# Crear nueva con valor seguro
+import secrets
+new_key = secrets.token_hex(32)
+requests.post(f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}/envs",
+              headers=headers, json={"key": "SERVICE_API_KEY", "value": new_key})
+print(f"Nueva key: {new_key}")  # Guardar para usar en n8n
+```
 
 **Healthcheck falla / `running:unknown`**
 → `main.py` debe tener `GET /health` retornando 200.
-→ `healthcheck_path` y puerto deben estar configurados en la app.
+→ `dockerfile_location` debe estar configurado (`/Dockerfile`).
 → Usar `configure_application()` que setea estos valores automáticamente.
 
 **n8n no puede alcanzar el servicio**
