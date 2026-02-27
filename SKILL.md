@@ -1,4 +1,4 @@
----
+﻿---
 name: agentic-microservice-deployer
 description: >
   Despliega un flujo agéntico como microservicio FastAPI interno en Coolify, accesible solo desde n8n
@@ -306,59 +306,134 @@ for log in logs:
 
 ---
 
-## Paso 5: Verificar y entregar al usuario
+## Paso 5: Autotest antes de entregar al usuario
+
+> **¿Por qué probar con FQDN público primero?**
+> El agente corre en la máquina del usuario (host), no dentro de Docker.
+> La URL interna `http://alias:8000` solo es accesible desde contenedores de la red `coolify`.
+> Para que el agente pueda hacer HTTP requests de prueba reales, necesita la URL pública temporal.
+
+### 5a. Pedir data de prueba al usuario
+
+Antes de probar, pregúntale al usuario:
+
+> "Para verificar que el microservicio funciona correctamente antes de entregártelo,
+> necesito datos de prueba reales para cada endpoint. Por ejemplo:
+> - ¿Qué email de prueba quieres que procese?
+> - ¿Qué texto/payload de ejemplo quieres enviar?
+>
+> Si no tienes datos reales ahora, puedo generar datos sintéticos basados en el esquema."
+
+### 5b. Obtener la URL pública del deploy recién hecho
 
 ```python
-app = requests.get(
-    f"{os.getenv('COOLIFY_URL')}/api/v1/applications/{APP_UUID}",
-    headers=headers
-).json()
+import requests, os, time
+from dotenv import load_dotenv
+load_dotenv()
 
-print(f"Status:  {app.get('status')}")
-print(f"Alias:   {app.get('custom_network_aliases')}")
-print(f"FQDN:    {app.get('fqdn') or 'NINGUNO (correcto)'}")
+headers_api = {"Authorization": f"Bearer {os.getenv('COOLIFY_TOKEN')}", "Accept": "application/json"}
+app = requests.get(f"{os.getenv('COOLIFY_URL')}/api/v1/applications/{APP_UUID}", headers=headers_api).json()
 
-# Entregar al usuario
-print(f"""
-=== Microservicio listo ===
-URL interna (desde n8n): http://{ALIAS}:8000
-Header de autenticacion: X-API-Key: {SERVICE_API_KEY}
+PUBLIC_URL = app.get("fqdn", "").rstrip("/")
+print(f"URL publica para tests: {PUBLIC_URL}")
+# ej: http://uuid.187.77.17.72.sslip.io
+```
 
-Para probar desde n8n, crea un nodo HTTP Request:
-  Method: POST (o el que corresponda)
-  URL: http://{ALIAS}:8000/[tu-endpoint]
-  Headers: X-API-Key = {SERVICE_API_KEY}
-""")
+> **Nota:** El FQDN se mantiene activo SOLO durante los tests. Coolify lo asigna
+> automáticamente al crear la app. Lo eliminamos en el Paso 5d, después de que todo pase.
+
+### 5c. Ejecutar los tests
+
+```python
+import json
+
+AUTH_HEADER = {"X-API-Key": SERVICE_API_KEY} if SERVICE_API_KEY else {}
+test_results = []
+
+# Test 1: Healthcheck (siempre)
+r = requests.get(f"{PUBLIC_URL}/health", headers=AUTH_HEADER, timeout=10)
+passed = r.status_code == 200 and r.json().get("status") == "ok"
+test_results.append({"test": "GET /health", "status": r.status_code, "passed": passed})
+print(f"{'OK' if passed else 'FAIL'} GET /health → {r.status_code}")
+
+# Test 2+: Endpoints del negocio (usar data de prueba del usuario o sintética)
+# Ejemplo — adaptar según los endpoints reales de main.py:
+test_payload = {
+    # poner aqui los datos de prueba que dio el usuario
+}
+r2 = requests.post(
+    f"{PUBLIC_URL}/tu-endpoint",
+    headers={**AUTH_HEADER, "Content-Type": "application/json"},
+    json=test_payload,
+    timeout=30
+)
+passed2 = r2.status_code == 200
+test_results.append({"test": "POST /tu-endpoint", "status": r2.status_code,
+                     "passed": passed2, "response": r2.text[:200]})
+print(f"{'OK' if passed2 else 'FAIL'} POST /tu-endpoint → {r2.status_code}")
+print(f"  Response: {r2.text[:200]}")
+
+# Resumen
+all_passed = all(t["passed"] for t in test_results)
+print(f"\n{'TODOS LOS TESTS PASARON' if all_passed else 'HAY TESTS FALLIDOS'}")
+for t in test_results:
+    print(f"  {'OK' if t['passed'] else 'FAIL'} {t['test']}")
+```
+
+Si algún test falla:
+- Leer los logs del deploy para entender el error
+- Corregir el código en `main.py`
+- Hacer `git push` + `manager.deploy_application(APP_UUID)` + esperar + re-testear
+- Repetir hasta que todos los tests pasen
+
+### 5d. Tests pasados → migrar a red interna
+
+Una vez que **todos los tests pasan**, eliminar el FQDN y configurar como servicio interno:
+
+```python
+base = f"{os.getenv('COOLIFY_URL')}/api/v1/applications/{APP_UUID}"
+headers_coolify = {"Authorization": f"Bearer {os.getenv('COOLIFY_TOKEN')}",
+                   "Content-Type": "application/json"}
+
+# PATCHes separados (la API de Coolify rechaza campos mezclados)
+requests.patch(base, headers=headers_coolify, json={"custom_network_aliases": ALIAS})
+requests.patch(base, headers=headers_coolify, json={"domains": ""})  # elimina FQDN publico
+requests.patch(base, headers=headers_coolify, json={"dockerfile_location": "/Dockerfile"})
+
+# Redeploy para aplicar cambio de red
+manager.deploy_application(APP_UUID)
+time.sleep(60)
+
+# Verificar
+app_final = requests.get(base, headers=headers_coolify).json()
+assert not app_final.get("fqdn"), "FQDN no eliminado"
+assert app_final.get("custom_network_aliases") == ALIAS, "Alias no configurado"
+print(f"Servicio migrado a red interna. URL para n8n: http://{ALIAS}:8000")
 ```
 
 ---
 
 ## Paso 6: Generar documentación de endpoints (API_DOCS.md)
 
-En lugar de crear el workflow de n8n automáticamente (costoso en tokens y propenso a errores),
-el agente genera un archivo de documentación con todos los endpoints, ejemplos curl y la
-configuración exacta para el nodo HTTP Request de n8n. El usuario lo importa en ~1 minuto.
-
-Lee el `main.py` del servicio desplegado y genera el archivo:
+El agente lee `main.py` y genera un archivo con curls y configuración lista para n8n.
+El usuario lo copia directamente al nodo HTTP Request — sin tocar código.
 
 ```python
-import ast, os, textwrap
-
-# Leer main.py para extraer endpoints
+# Leer main.py para extraer endpoints reales
 with open("main.py", "r", encoding="utf-8") as f:
     source = f.read()
 
-ALIAS = "nombre-del-servicio"         # mismo valor que usaste en configure_application
-SERVICE_API_KEY = "TU_KEY_AQUI"       # la key generada en paso 3c (o "" si no usas auth)
-PORT = 8000
+# El agente lee el codigo y extrae: metodo HTTP, ruta, descripcion (docstring),
+# campos del body (modelos Pydantic), respuesta esperada.
+# Genera una entrada por endpoint. NO usar valores genéricos.
 
-# El agente debe leer el codigo e identificar cada @app.get / @app.post / etc.
-# y construir el doc a mano segun lo que ve en main.py
-# Ejemplo de lo que debe generar:
-docs = f"""# API Documentation — {ALIAS}
+PORT = 8000
+auth_line = f"X-API-Key: {SERVICE_API_KEY}" if SERVICE_API_KEY else "(sin autenticacion)"
+
+doc = f"""# API Documentation — {ALIAS}
 
 **URL base (desde n8n):** `http://{ALIAS}:{PORT}`
-{"**Autenticacion:** Header `X-API-Key: " + SERVICE_API_KEY + "`" if SERVICE_API_KEY else "**Autenticacion:** Ninguna (servicio interno)"}
+**Autenticacion:** {auth_line}
 
 ---
 
@@ -367,70 +442,35 @@ docs = f"""# API Documentation — {ALIAS}
 ### GET /health
 Verifica que el servicio está activo.
 
-**curl:**
-```bash
-curl http://{ALIAS}:{PORT}/health \\
-{"  -H 'X-API-Key: " + SERVICE_API_KEY + "'" if SERVICE_API_KEY else ""}
-```
+curl:
+  curl http://{ALIAS}:{PORT}/health -H 'X-API-Key: {SERVICE_API_KEY}'
 
-**Respuesta esperada:**
-```json
-{{"status": "ok"}}
-```
+n8n HTTP Request:
+  Method: GET
+  URL: http://{ALIAS}:{PORT}/health
+  Header X-API-Key: {SERVICE_API_KEY}
 
-**n8n HTTP Request node:**
-```
-Method:  GET
-URL:     http://{ALIAS}:{PORT}/health
-Headers: X-API-Key = {SERVICE_API_KEY if SERVICE_API_KEY else "(no requerido)"}
-```
+Respuesta: {{"status": "ok"}}
 
 ---
 
-### POST /[tu-endpoint]
-[descripcion del endpoint — leer de docstring en main.py]
-
-**curl:**
-```bash
-curl -X POST http://{ALIAS}:{PORT}/[tu-endpoint] \\
-  -H 'Content-Type: application/json' \\
-{"  -H 'X-API-Key: " + SERVICE_API_KEY + "' \\\\" if SERVICE_API_KEY else ""}
-  -d '{{"campo": "valor"}}'
-```
-
-**n8n HTTP Request node:**
-```
-Method:  POST
-URL:     http://{ALIAS}:{PORT}/[tu-endpoint]
-Headers: Content-Type = application/json
-         X-API-Key = {SERVICE_API_KEY if SERVICE_API_KEY else "(no requerido)"}
-Body:    JSON
-         {{"campo": "valor"}}
-```
+[El agente agrega aqui una seccion por cada @app.post/@app.get encontrado en main.py,
+con el payload real basado en los modelos Pydantic definidos]
 
 ---
 
-## Importar a n8n
+## Conectar a n8n
 
-1. En n8n, crea un workflow nuevo
-2. Agrega un nodo **HTTP Request**
-3. Copia la configuracion del endpoint que quieras probar
-4. Para produccion, conecta un trigger real (IMAP, Webhook, Schedule, etc.)
+1. Crea un workflow en n8n
+2. Agrega: [trigger real] → HTTP Request → [logica adicional]
+3. Copia la config del endpoint desde este doc al nodo HTTP Request
+4. El microservicio ya está disponible en la red interna de Coolify
 """
 
 with open("API_DOCS.md", "w", encoding="utf-8") as f:
-    f.write(docs)
-
-print("API_DOCS.md generado.")
-print(f"El usuario puede abrirlo y copiar los configs directamente a n8n.")
+    f.write(doc)
+print("API_DOCS.md generado — compartir con el usuario.")
 ```
-
-> **Instruccion al agente:** Lee el `main.py` real del proyecto antes de generar el doc.
-> Extrae cada endpoint (`@app.get`, `@app.post`, etc.), su docstring, los campos del body
-> (si tiene un modelo Pydantic) y genera una entrada completa por endpoint.
-> No uses valores genéricos — el doc debe ser especifico al servicio que se desplegó.
-
-
 
 ---
 
@@ -439,8 +479,8 @@ print(f"El usuario puede abrirlo y copiar los configs directamente a n8n.")
 | Regla | Descripción |
 |---|---|
 | 🔒 **Repo privado SIEMPRE** | Nunca código de cliente en repo público |
-| 🚫 **Sin FQDN** | Servicio solo en red interna de Coolify |
-| 🔑 **SERVICE_API_KEY con `secrets.token_hex(32)`** | Nunca strings hardcodeados como "secret-key-2024" |
+| 🧪 **FQDN temporal durante tests** | Se elimina después de que todos los tests pasen |
+| 🔑 **SERVICE_API_KEY opcional** | `secrets.token_hex(32)` si el usuario la quiere; omitir si no |
 | 📁 **.env solo en local** | Coolify inyecta vars via API |
 | 🏷️ **Alias descriptivo** | `cliente-servicio` ej: `acme-yt-optimizer` |
 
@@ -463,7 +503,6 @@ print(f"El usuario puede abrirlo y copiar los configs directamente a n8n.")
 → La solución es enviar **un PATCH separado por campo**:
 ```python
 base = f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}"
-# Cada campo en su propio request
 requests.patch(base, headers=headers, json={"custom_network_aliases": ALIAS})
 requests.patch(base, headers=headers, json={"domains": ""})
 requests.patch(base, headers=headers, json={"dockerfile_location": "/Dockerfile"})
@@ -478,24 +517,28 @@ requests.patch(base, headers=headers, json={"dockerfile_location": "/Dockerfile"
 → Las variables duplicadas no se pueden actualizar con PATCH individual (da 404).
 → Solución: DELETE del env antiguo + POST del nuevo:
 ```python
-# Eliminar duplicados
 envs = requests.get(f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}/envs", headers=headers).json()
 for e in [x for x in envs if x["key"] == "SERVICE_API_KEY"]:
     requests.delete(f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}/envs/{e['uuid']}", headers=headers)
-# Crear nueva con valor seguro
 import secrets
 new_key = secrets.token_hex(32)
 requests.post(f"{COOLIFY_URL}/api/v1/applications/{APP_UUID}/envs",
               headers=headers, json={"key": "SERVICE_API_KEY", "value": new_key})
-print(f"Nueva key: {new_key}")  # Guardar para usar en n8n
+print(f"Nueva key: {new_key}")
 ```
+
+**Tests fallan durante Paso 5 — servicio devuelve error 500**
+→ Leer logs: `GET /api/v1/deployments/{deployment_uuid}` → campo `logs`
+→ Corregir `main.py`, hacer push, redeploy, esperar, re-testear.
+→ NO migrar a red interna hasta que todos los tests pasen.
 
 **Healthcheck falla / `running:unknown`**
 → `main.py` debe tener `GET /health` retornando 200.
 → `dockerfile_location` debe estar configurado (`/Dockerfile`).
 → Usar `configure_application()` que setea estos valores automáticamente.
 
-**n8n no puede alcanzar el servicio**
+**n8n no puede alcanzar el servicio (red interna)**
 → n8n debe estar instalado en el mismo Coolify (misma red Docker `coolify`).
 → Usar `http://alias:8000` — nunca `localhost` ni la IP del servidor.
-→ Si n8n está en otro servidor, se necesita exponer el servicio (con FQDN + auth robusta).
+→ Si n8n está en otro servidor, necesitas FQDN + autenticación robusta permanente.
+
