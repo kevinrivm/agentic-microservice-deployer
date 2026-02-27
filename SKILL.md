@@ -66,6 +66,43 @@ https://github.com/kevinrivm/agentic-microservice-deployer/tree/main/execution
 
 ---
 
+## Paso 0: Recolectar datos de prueba — OBLIGATORIO ANTES DE CONSTRUIR
+
+> **¿Por qué primero?** El agente necesita datos de prueba reales para:
+> 1. Entender el formato exacto del input (evita suposiciones que generan código incorrecto)
+> 2. Autotestear el servicio antes de entregarlo al usuario
+> 3. Validar casos límite desde el inicio
+>
+> **No empieces a escribir código hasta tener al menos un ejemplo de prueba.**
+
+Pregunta SIEMPRE al usuario antes de continuar:
+
+---
+> **Antes de construir el microservicio, necesito datos de prueba reales.**
+> Esto me permitirá:
+> - Construir el código basado en el formato real de tus datos
+> - Autotestear el servicio antes de entregártelo
+> - Detectar errores antes de que tú los encuentres
+>
+> Por favor proporciona:
+> 1. **Un ejemplo real de cada tipo de input** que recibirá el servicio
+>    (ej: un ticket OCR de ejemplo, un email completo, una imagen, un JSON de muestra)
+> 2. **La respuesta esperada** para ese input
+>    (ej: "para este ticket quiero que extraiga: fecha, total, proveedor")
+> 3. **Un caso límite o caso difícil** si tienes uno
+>    (ej: "a veces los tickets vienen borrosos o en inglés")
+>
+> Si no tienes datos reales disponibles ahora, puedo generar datos sintéticos basados
+> en tu descripción, pero los datos reales producen mejores resultados.
+---
+
+Una vez que tengas los datos de prueba:
+- Guárdalos en `.tmp/test_data/` para referencia durante el desarrollo
+- Úsalos como base para construir los modelos Pydantic y la lógica del servicio
+- Los mismos datos se usarán en el **Paso 5 (Autotest)** antes de entregar
+
+---
+
 ## Prerequisitos — Verificar antes de empezar
 
 ### Variables de entorno (en `.env`):
