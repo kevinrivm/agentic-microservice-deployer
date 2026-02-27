@@ -17,6 +17,43 @@ y accesible exclusivamente desde n8n vía red Docker interna. Sin URLs públicas
 
 ---
 
+## ⚙️ Setup inicial — LEER ANTES DE EMPEZAR
+
+Este skill incluye dos scripts de ejecución que **deben existir en `execution/`** del proyecto.
+Si no existen, créalos copiando desde la carpeta del skill:
+
+```python
+import shutil, os
+
+# Ruta donde está instalado el skill (ajustar si es diferente)
+SKILL_DIR = ".agent/skills/agentic-microservice-deployer/execution"
+
+os.makedirs("execution", exist_ok=True)
+for script in ["coolify_manager.py", "github_manager.py"]:
+    src = os.path.join(SKILL_DIR, script)
+    dst = os.path.join("execution", script)
+    if not os.path.exists(dst):
+        if os.path.exists(src):
+            shutil.copy(src, dst)
+            print(f"Copiado: {script}")
+        else:
+            print(f"ADVERTENCIA: {src} no encontrado. Descarga manual necesaria.")
+    else:
+        print(f"Ya existe: execution/{script}")
+```
+
+También instalar las dependencias si no están:
+```bash
+pip install requests python-dotenv
+```
+
+Si los scripts no están en la carpeta del skill, puedes obtenerlos del repo:
+```
+https://github.com/kevinrivm/agentic-microservice-deployer/tree/main/execution
+```
+
+---
+
 ## Mapa de lo que es manual vs automático
 
 | Paso | Quién | Frecuencia |
