@@ -333,27 +333,104 @@ Para probar desde n8n, crea un nodo HTTP Request:
 
 ---
 
-## Paso 6: Probar el microservicio desde n8n
+## Paso 6: Generar documentación de endpoints (API_DOCS.md)
 
-Para verificar que n8n puede alcanzar el servicio, crea un workflow de prueba.
+En lugar de crear el workflow de n8n automáticamente (costoso en tokens y propenso a errores),
+el agente genera un archivo de documentación con todos los endpoints, ejemplos curl y la
+configuración exacta para el nodo HTTP Request de n8n. El usuario lo importa en ~1 minuto.
 
-> Si tienes el skill de n8n instalado (`npx skills add czlonkowski/n8n-skills`), úsalo
-> para crear el workflow de test. Si no, sigue estos pasos manuales:
+Lee el `main.py` del servicio desplegado y genera el archivo:
 
-**Workflow de test mínimo en n8n:**
+```python
+import ast, os, textwrap
 
-1. **Nodo Manual Trigger**
-2. **Nodo HTTP Request:**
-   - Method: `GET`
-   - URL: `http://[ALIAS]:8000/health`
-   - Headers: `X-API-Key: [SERVICE_API_KEY]`
-3. Ejecutar — debe retornar `{"status": "ok"}`
+# Leer main.py para extraer endpoints
+with open("main.py", "r", encoding="utf-8") as f:
+    source = f.read()
 
-Si el healthcheck responde 200, el microservicio está integrado correctamente con n8n.
+ALIAS = "nombre-del-servicio"         # mismo valor que usaste en configure_application
+SERVICE_API_KEY = "TU_KEY_AQUI"       # la key generada en paso 3c (o "" si no usas auth)
+PORT = 8000
 
-> **Si n8n no puede alcanzar el servicio:**
-> Verificar que n8n fue instalado como servicio dentro del mismo Coolify
-> (comparte la red Docker `coolify`). Si n8n está en otro servidor, la red interna no aplica.
+# El agente debe leer el codigo e identificar cada @app.get / @app.post / etc.
+# y construir el doc a mano segun lo que ve en main.py
+# Ejemplo de lo que debe generar:
+docs = f"""# API Documentation — {ALIAS}
+
+**URL base (desde n8n):** `http://{ALIAS}:{PORT}`
+{"**Autenticacion:** Header `X-API-Key: " + SERVICE_API_KEY + "`" if SERVICE_API_KEY else "**Autenticacion:** Ninguna (servicio interno)"}
+
+---
+
+## Endpoints
+
+### GET /health
+Verifica que el servicio está activo.
+
+**curl:**
+```bash
+curl http://{ALIAS}:{PORT}/health \\
+{"  -H 'X-API-Key: " + SERVICE_API_KEY + "'" if SERVICE_API_KEY else ""}
+```
+
+**Respuesta esperada:**
+```json
+{{"status": "ok"}}
+```
+
+**n8n HTTP Request node:**
+```
+Method:  GET
+URL:     http://{ALIAS}:{PORT}/health
+Headers: X-API-Key = {SERVICE_API_KEY if SERVICE_API_KEY else "(no requerido)"}
+```
+
+---
+
+### POST /[tu-endpoint]
+[descripcion del endpoint — leer de docstring en main.py]
+
+**curl:**
+```bash
+curl -X POST http://{ALIAS}:{PORT}/[tu-endpoint] \\
+  -H 'Content-Type: application/json' \\
+{"  -H 'X-API-Key: " + SERVICE_API_KEY + "' \\\\" if SERVICE_API_KEY else ""}
+  -d '{{"campo": "valor"}}'
+```
+
+**n8n HTTP Request node:**
+```
+Method:  POST
+URL:     http://{ALIAS}:{PORT}/[tu-endpoint]
+Headers: Content-Type = application/json
+         X-API-Key = {SERVICE_API_KEY if SERVICE_API_KEY else "(no requerido)"}
+Body:    JSON
+         {{"campo": "valor"}}
+```
+
+---
+
+## Importar a n8n
+
+1. En n8n, crea un workflow nuevo
+2. Agrega un nodo **HTTP Request**
+3. Copia la configuracion del endpoint que quieras probar
+4. Para produccion, conecta un trigger real (IMAP, Webhook, Schedule, etc.)
+"""
+
+with open("API_DOCS.md", "w", encoding="utf-8") as f:
+    f.write(docs)
+
+print("API_DOCS.md generado.")
+print(f"El usuario puede abrirlo y copiar los configs directamente a n8n.")
+```
+
+> **Instruccion al agente:** Lee el `main.py` real del proyecto antes de generar el doc.
+> Extrae cada endpoint (`@app.get`, `@app.post`, etc.), su docstring, los campos del body
+> (si tiene un modelo Pydantic) y genera una entrada completa por endpoint.
+> No uses valores genéricos — el doc debe ser especifico al servicio que se desplegó.
+
+
 
 ---
 
